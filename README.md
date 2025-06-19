@@ -115,12 +115,12 @@ Maintenant le systèm peut démarrer sur l'un ou l'autre !
 
 Les disques:
 
-| devices | uuid |
-|---  |--- |
-|/dev/sda| DDCC2201-7D60-4D7C-9F6C-F0AC95461FF6|
-|/dev/sdb| 782D750C-766E-4A1E-997D-FE2DDB8A1F62| 
-|/dev/sdc| 5609A76A-4FA0-4916-8710-0954CEAB32C7| 
-|/dev/sdd| AF592D4F-D020-44B5-B55E-94E4F2209D8D| 
+| devices | etiquette| uuid disk
+|---  |--- |--- |
+|/dev/sda| F6 |DDCC2201-7D60-4D7C-9F6C-F0AC95461FF6|
+|/dev/sdb| 62 |782D750C-766E-4A1E-997D-FE2DDB8A1F62|
+|/dev/sdc| C7 |A55FE146-D319-4D72-91B9-B6741E09AFFA|
+|/dev/sdd| 8D |C42F57A1-F420-46DA-BE1C-B51756C032AA| 
 
 ### Verifier le miroir
 
@@ -221,12 +221,16 @@ nmcli con modify br0 ipv4.gateway 192.168.1.254
 nmcli con modify br0 ipv4.dns "192.168.1.254"
 nmcli con modify br0 ipv4.method manual
 nmcli con modify br0 ipv6.method ignore
-nmcli con add type ethernet con-name eth0-slave ifname eth0 master br0
+nmcli con add type ethernet con-name enp2s0-slave ifname enp2s0 master br0
+```
+
+```
+nmcli con delete enp2s0
 ```
 
 ```
 nmcli con up br0
-nmcli con up eth0-slave
+nmcli con up enp2s0-slave
 ```
 
 ```
@@ -235,24 +239,248 @@ ip a show br0
 
 ## Préparation du system
 
-### Mise à jour
+### Upgrade du système
+
+Upgrade OS:
+```
+yum update -y
+```
+
+Resync de /boot/efi (exemple si /boot/efi est actif sur /dev/sda1 et /dev/sdb6 est le secours)
+```
+dd if=/dev/sda1 of=/dev/sdb6 bs=1M status=progress conv=fsync
+```
 
 ### Installation de KVM
 
 ### Partitionnement des disques ASM
 
+Les disques ASM sont /dev/sdc et /dev/sdd dans cette exemple.
 
 Netoyer le disque:
 ```
-parted -s /dev/sdb mklabel gpt
+parted -s /dev/sdc mklabel gpt
+parted -s /dev/sdd mklabel gpt
 ```
 
-Créer les x partitions:
+Créer les 21 partitions sur sdc:
 ```
-for i in $(seq 0 6); do
-  start=$((i * 128))
-  end=$(((i + 1) * 128))
-  parted -s /dev/sdb mkpart primary ${start}GiB ${end}GiB
+for i in $(seq 0 20); do
+  start=$((i * 128 + 35))
+  end=$(((i + 1) * 128 + 34))
+  echo "parted -s /dev/sdc mkpart primary ${start}GiB ${end}GiB"
+  parted -s /dev/sdc mkpart primary ${start}GiB ${end}GiB
 done
 ```
+
+Créer les 21 partitions sur sdd:
+```
+for i in $(seq 0 20); do
+  start=$((i * 128 + 34))
+  end=$(((i + 1) * 128 + 34))
+  parted -s /dev/sdd mkpart primary ${start}GiB ${end}GiB
+done
+```
+
+## Fichiers nécessaire
+
+A déposer dans /tmp:
+- oracleasmlib-3.1.0-6.el8.x86_64.rpm
+- LINUX.X64_193000_grid_home.zip  
+
+## Prerequis Oracle
+
+```
+yum install -y oracle-database-preinstall-19c 
+yum install -y java-1.8.0-openjdk
+yum install -y ksh libaio-devel.x86_64
+dnf install -y oraclelinux-release-el8
+dnf config-manager --enable ol8_addons
+yum install oracleasm-support
+yum install kmod-oracleasm
+```
+```
+rpm -i /tmp/oracleasmlib-3.1.0-6.el8.x86_64.rpm
+```
+
+## Préparation du system
+
+```
+groupadd asmadmin
+groupadd oinstall
+groupadd asmdba
+useradd -g oinstall -G asmadmin,asmdba grid
+```
+
+```
+mkdir -p /u01/app/grid
+mkdir -p /u01/app/19/grid
+chown -R grid:oinstall /u01
+chmod -R 775 /u01
+```
+
+```
+vi /etc/sysctl.d/97-oracle-database-sysctl.conf
+fs.aio-max-nr = 1048576
+fs.file-max = 6815744
+kernel.shmall = 2097152
+kernel.shmmax = 4294967295
+kernel.shmmni = 4096
+kernel.sem = 250 32000 100 128
+net.ipv4.ip_local_port_range = 9000 65500
+net.core.rmem_default = 262144
+net.core.rmem_max = 4194304
+net.core.wmem_default = 262144
+net.core.wmem_max = 1048576
+```
+```
+/sbin/sysctl --system
+```
+```
+[root@opa1 ~]# cat /etc/selinux/config|grep SELINUX=
+# SELINUX= can take one of these three values:
+SELINUX=disabled
+```
+```
+setenforce 0
+```
+
+```
+su - grid
+vi .bash_profile
+# .bash_profile
+# Get the aliases and functions
+if [ -f ~/.bashrc ]; then
+. ~/.bashrc
+fi
+ORACLE_SID=+ASM; export ORACLE_SID
+ORACLE_BASE=/u01/app/grid; export ORACLE_BASE
+ORACLE_HOME=/u01/app/19/grid; export ORACLE_HOME
+ORACLE_TERM=xterm; export ORACLE_TERM
+TNS_ADMIN=$ORACLE_HOME/network/admin; export TNS_ADMIN
+PATH=.:${JAVA_HOME}/bin:${PATH}:$HOME/bin:$ORACLE_HOME/bin
+PATH=${PATH}:/usr/bin:/bin:/usr/local/bin
+export PATH
+export TEMP=/tmp
+export TMPDIR=/tmp
+umask 022
+```
+
+## Configuration d'asmlib
+
+```
+[root@opa1 tmp]# oracleasm configure -i
+Configuring the Oracle ASM system service.
+
+This will configure the on-boot properties of the Oracle ASM system
+service.  The following questions will determine whether the service
+is started on boot and what permissions it will have.  The current
+values will be shown in brackets ('[]').  Hitting <ENTER> without
+typing an answer will keep that current value.  Ctrl-C will abort.
+
+Default user to own the ASM disk devices []: grid
+Default group to own the ASM disk devices []: oinstall
+Start Oracle ASM system service on boot (y/n) [y]: y
+Scan for Oracle ASM disks when starting the oracleasm service (y/n) [y]: y
+Maximum number of ASM disks that can be used on system [2048]: 
+Enable iofilter if kernel supports it (y/n) [y]: y
+Writing Oracle ASM system service configuration: done
+
+Configuration changes only come into effect after the Oracle ASM
+system service is restarted.  Please run 'systemctl restart oracleasm'
+after making changes.
+
+WARNING: All of your Oracle and ASM instances must be stopped prior
+to restarting the oracleasm service.
+```
+```
+systemctl start oracleasm.service
+```
+
+## Creation des disques ASM
+
+```
+for i in $(seq 1 21); do
+  oracleasm createdisk ASMDISK1P${i} /dev/sdc${i}
+done
+```
+```
+for i in $(seq 1 21); do
+  oracleasm createdisk ASMDISK2P${i} /dev/sdd${i}
+done
+```
+```
+oracleasm listdisks
+```
+
+## Installation de OraGrid
+
+```
+su - grid
+cd /tmp
+unzip LINUX.X64_193000_grid_home.zip -d $ORACLE_HOME
+```
+```
+su -
+cd  /u01/app/19/grid/cv/rpm/
+CVUQDISK_GRP=oinstall; export CVUQDISK_GRP
+rpm -iv cvuqdisk-1.0.10-1.rpm
+```
+```
+su - grid
+cd $ORACLE_HOME
+export CV_ASSUME_DISTID=OL8.10
+./gridSetup.sh
+```
+
+Les options:
+- Configure Oracle Grid Infrastructure for a standalone Server
+- Disk group name: DATA
+- Redundancy: Normal
+- Choisir les disks: scd1 et sdd1
+- password: changeme
+- group OSASM: asmadmin
+- group OSDBA: asmdba
+- ORACLE_BASE /u01/app/grid
+- inv directory /u01/app/oraIventory
+
+Depuis une session root quand demandé:
+```
+/u01/app/oraInventory/orainstRoot.sh
+/u01/app/19/grid/root.sh
+```
+
+## Suppression du grid si besoin
+
+Sous root:
+```
+/u01/app/19/grid/crs/install/roothas.sh -deconfig -force -verbose
+rm -rf /u01/app/grid
+rm -rf /u01/app/19/grid/*
+rm -rf /u01/app/19/grid/.*
+rm -rf /u01/app/oraInventory
+rm -f /etc/systemd/system/oracle-ohasd.service
+chown grid.oinstall /u01/app/19/grid
+systemctl daemon-reexec
+systemctl daemon-reload
+```
+
+Netoie les disques:
+```
+wipefs -a /dev/sdc
+sgdisk --zap-all /dev/sdc
+dd if=/dev/zero of=/dev/sdc bs=1M count=10
+partprobe /dev/sdc
+
+wipefs -a /dev/sdd
+sgdisk --zap-all /dev/sdd
+dd if=/dev/zero of=/dev/sdd bs=1M count=10
+partprobe /dev/sdc
+```
+
+```
+oracleasm scandisks
+oracleasm listdisks
+```
+
 
